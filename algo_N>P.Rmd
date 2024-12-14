@@ -1,0 +1,315 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+On charge les bibliothèques nécessaires.
+
+```{r}
+rm(list = ls())
+graphics.off()
+gc()  # Nettoie la mémoire
+library(epca) #pour le jeu de donnée
+#library(elasticnet) #pour le deuxieme jeu de donnée (on veut etre plus proche des resultats de l'article)
+library(glmnet)  # Pour l'Elastic Net
+library(rsvd)    # Pour la SVD
+library(expm)  # Pour la racine carrée matricielle
+library(elasticnet)
+library(ggplot2)
+library(tidyr)
+```
+
+```{r}
+# Charger le jeu de données pitprops
+#Un jeu de donnée qui correspond a une matrice de correlation pour un échantillon de 180 individu et 13 variables. 
+data("pitprops")
+
+# Afficher un aperçu
+pitprops
+```
+
+```{r}
+#On commence par effectuer une pca classique, on regarde les vecteurs propres de la matrice de correlation 
+cor_matrix = pitprops
+pca_result <- eigen(cor_matrix) #valeur propre 
+values <- pca_result$values  # Les valeurs propres
+values = values/13 * 100
+vectors <- pca_result$vectors  # Les vecteurs propres
+
+```
+
+```{r}
+# Afficher les valeurs propres
+print(values[1:6])
+# Afficher les vecteurs propres (composantes principales)
+print(vectors[,1:6])
+# On profite de cela pour comparer avec les resultats de l'article sur le jeu de donnée 
+```
+On retrouve les memes vecteurs propres et variance que pour la PCA de l'article
+
+```{r}
+#On passe a l'algorithme 1 pour la sparse PCA
+# Étape 1 :Initialisation 
+
+pca_result <- eigen(cor_matrix)  # Décomposition propre
+vectors <- pca_result$vectors  # Vecteurs propres
+
+# Sélection des 6 premiers vecteurs propres
+A <- vectors[, 1:6]  
+
+sqrt_cov <- sqrtm(cor_matrix)  # Racine carrée matricielle
+lambda1 <- c(0.0388, 0.14, 0.06, 0.2, 0.15, 0.12)  # Valeurs spécifiques pour chaque composante
+k <- 6 # Nombre de composantes principales à traiter
+X <- cor_matrix  # Utilisation de la matrice de corrélation
+B <- matrix(0, nrow = ncol(X), ncol = k)  # Matrice pour les coefficients β
+tol <- 1e-7  # Tolérance pour la convergence
+max_iter <- 1000  # Nombre maximum d'itérations
+converged <- FALSE  # Indicateur de convergence
+iter <- 0
+
+while (!converged && iter < max_iter) { #on repete etape 2 et 3 jusqu'a convergence
+  iter <- iter + 1
+  B_prev <- B  # Sauvegarder les valeurs précédentes de B
+  A_prev = A 
+  for (j in 1:k) { 
+    # Etape 2 on calcule B avec elastic Net pour A fixé
+    alpha_j <- A[, j]  # Composante principale actuelle
+    
+    # Transformation pour X* et Y*
+    X_etoile <- sqrt_cov  # X* = sqrt(cov_matrix)
+    y_etoile <- X_etoile %*% alpha_j  # Y* = X* %*% alpha_j
+    
+    # Ajuster le modèle Elastic Net
+    elastic_net <- glmnet(X_etoile, y_etoile, alpha = 1, lambda = lambda1[j], intercept = FALSE)
+    
+    # Extraire les coefficients
+    B[, j] <- coef(elastic_net, s = 0)[-1]  # Retirer l'interception
+  }
+  # Étape 3 : Mise à jour de A pour B fixé
+  svd_result <- rsvd(cor_matrix%*%B)
+  U <- svd_result$u
+  D <- diag(svd_result$d) # Valeurs singulières sous forme de matrice diagonale
+  V <- svd_result$v
+  A <- U %*% t(V)
+
+  #  Vérifier la convergence
+  diff_B <- max(abs(B - B_prev))  # Différence maximale entre B et B_prev
+  diff_A <- max(abs(A - A_prev))  # Différence maximale entre A et A_prev
+  
+  # Convergence si les différences sont sous la tolérance pour B et A
+  if (diff_B < tol && diff_A < tol) {
+    converged <- TRUE
+  }
+  
+}
+
+if (converged) {
+  cat("Convergence atteinte après", iter, "itérations.\n")
+} else {
+  cat("L'algorithme n'a pas convergé après", max_iter, "itérations.\n")
+}
+
+# Étape 4 : Normalisation des coefficients
+for (j in 1:k) {
+  B[, j] <- B[, j] / sqrt(sum(B[, j]^2)+ 1e-8)  # Normalisation des colonnes de B
+}
+
+# Résultat final
+print(B)
+```
+```{r}
+# calcule de la variance pour comparer avec les resultats de l'article
+A <- cor_matrix
+V = B 
+
+# Trace de la matrice
+trace_A <- sum(diag(A))
+
+# Calculer la variance expliquée par chaque vecteur propre (colonne de V)
+explained_variance <- apply(V, 2, function(v) {
+  v <- v / sqrt(sum(v^2))  # Normalisation
+  t(v) %*% A %*% v / trace_A  # Formule
+})
+
+# Résultat
+explained_variance
+```
+On obtient à peu de choses près les mêmes variances que celles de la Table 3 de l'article.
+(penser a recompiler B ici)
+
+
+```{r}
+#calcule de la variance ajusté 
+Z =  sqrtm(cor_matrix)%*%B 
+qr_decomp <- qr(Z)
+
+# Extraction de la matrice Q (matrice orthogonale)
+Q <- qr.Q(qr_decomp)
+
+# Extraction de la matrice R (matrice triangulaire supérieure)
+R <- qr.R(qr_decomp)
+cat("Matrice R :\n")
+print(R)
+
+
+``` 
+
+```{r}
+diag_R = diag(R)^2
+s = sum(diag_R)
+diag_R/trace_A 
+```
+
+
+```{r}
+out1 <- spca(pitprops, K = 6, type = "Gram", sparse = "penalty", trace = TRUE, para = c(0.06, 0.16, 0.1, 0.5, 0.5, 0.5))
+print(out1)
+```
+```{r}
+# Fonction PCA avec Elastic Net et calcul de la variance ajustée
+pca_with_elastic_net <- function(cor_matrix, lambda1, k = 6, tol = 1e-7, max_iter = 1000) {
+  # Décomposition propre initiale
+  trace_A <- sum(diag(cor_matrix))
+
+  pca_result <- eigen(cor_matrix)
+  vectors <- pca_result$vectors
+  A <- vectors[, 1:k]
+  
+  # Racine carrée de la matrice de corrélation
+  sqrt_cov <- sqrtm(cor_matrix)
+  
+  # Initialisation des matrices
+  B <- matrix(0, nrow = ncol(cor_matrix), ncol = k)
+  converged <- FALSE
+  iter <- 0
+  
+  while (!converged && iter < max_iter) {
+    iter <- iter + 1
+    B_prev <- B
+    A_prev <- A
+    
+    # Étape 2: calcul des coefficients B avec Elastic Net pour A fixé
+    for (j in 1:k) {
+      alpha_j <- A[, j]
+      X_etoile <- sqrt_cov
+      y_etoile <- X_etoile %*% alpha_j
+      
+      # Ajustement du modèle Elastic Net
+      elastic_net <- glmnet(X_etoile, y_etoile, alpha = 1, lambda = lambda1[j], intercept = FALSE)
+      B[, j] <- coef(elastic_net, s = 0)[-1]  # Retirer l'interception
+    }
+    
+    # Étape 3: Mise à jour de A
+    svd_result <- rsvd(cor_matrix %*% B)
+    U <- svd_result$u
+    D <- diag(svd_result$d)
+    V <- svd_result$v
+    A <- U %*% t(V)
+    
+    # Vérification de la convergence
+    diff_B <- max(abs(B - B_prev))
+    diff_A <- max(abs(A - A_prev))
+    if (diff_B < tol && diff_A < tol) {
+      converged <- TRUE
+    }
+  }
+  
+  if (converged) {
+    cat("Convergence atteinte après", iter, "itérations.\n")
+  } else {
+    cat("L'algorithme n'a pas convergé après", max_iter, "itérations.\n")
+  }
+  
+  # Normalisation des coefficients B
+  for (j in 1:k) {
+    B[, j] <- B[, j] / sqrt(sum(B[, j]^2) + 1e-8)
+  }
+  
+  # Calcul de la variance ajustée
+  Z <- sqrtm(cor_matrix) %*% B
+  qr_decomp <- qr(Z)
+  
+  # Extraction des matrices Q et R
+  Q <- qr.Q(qr_decomp)
+  R <- qr.R(qr_decomp)
+  
+  # Calcul de la variance ajustée
+  diag_R <- diag(R)^2
+  s <- sum(diag_R)
+  variance_adjusted <- diag_R / trace_A  # Variance ajustée pour chaque vecteur
+  
+  return(list(vectors = B, variance_adjusted = variance_adjusted))
+}
+
+
+```
+
+```{r}
+# Exemple d'utilisation avec une matrice de corrélation et lambda1
+cor_matrix <- cor_matrix
+lambda1 <- c(0.0388, 0.14, 0.06, 0.2, 0.15, 0.12)
+result <- pca_with_elastic_net(cor_matrix, lambda1)
+print(result$vectors)
+ print(result$variance_adjusted)
+```
+
+```{r}
+# Liste pour stocker les variances ajustées
+variance_adjusted_all <- list()
+
+# Valeurs de lambda1 allant de 0 à 0.18 par pas de 0.02
+lambda_values <- seq(0, 1, by = 0.02)
+
+# Boucle sur chaque valeur de lambda1
+for (lambda in lambda_values) {
+  lambda1 <- rep(lambda, 6)  # Appliquer la même valeur de lambda pour chaque composante
+  result <- pca_with_elastic_net(cor_matrix, lambda1, k = 6)
+  
+  # Stocker la variance ajustée dans la liste avec le nom correspondant à lambda
+  variance_adjusted_all[[paste0("lambda_", lambda)]] <- result$variance_adjusted
+}
+
+# Afficher les résultats des variances ajustées pour chaque valeur de lambda
+
+```
+```{r}
+# Initialiser une liste vide pour stocker les résultats
+pcs <- list()
+
+# Boucle sur chaque composante principale (de 1 à 6)
+for (i in 1:6) {
+  # Initialiser un vecteur pour chaque composante principale
+  pc_values <- c()
+  
+  # Boucle sur les différentes valeurs de lambda
+  for (j in 1:34) {
+    # Extraire la valeur de variance ajustée pour chaque composante et lambda
+    pc_values <- c(pc_values, variance_adjusted_all[[j]][i])  
+  }
+  
+  # Ajouter les valeurs de la composante principale i à la liste pcs
+  pcs[[i]] <- pc_values
+}
+
+# Afficher les résultats
+pcs
+
+```
+```{r}
+lambda_values <- seq(0, 0.66, by = 0.02)
+par(mfrow=c(2, 3))  # Placer les graphiques dans une grille de 2x3
+
+# Boucle pour chaque composante principale
+for (i in 1:6) {
+  # Extraire les valeurs de variance ajustée pour la composante i
+  variance_values <- pcs[[i]]
+  
+  # Tracer la variance ajustée en fonction de lambda
+  plot(lambda_values, variance_values, type="o", col="blue", 
+       xlab="Lambda1", ylab="Variance Ajustée", 
+       main=paste("Composante PC", i))
+}
+```
+
+
+

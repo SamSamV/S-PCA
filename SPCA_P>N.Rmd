@@ -1,0 +1,331 @@
+On charge les bibliotheques 
+
+```{r}
+library(elasticnet)
+library(irlba) # pour les vecteurs propres 
+library(glmnet)  # Pour l'Elastic Net
+library(rsvd)    # Pour la SVD
+library(expm)  # Pour la racine carrée matricielle
+library(elasticnet)
+library(data.table)
+rm(list = ls())
+graphics.off()
+gc()  # Nettoie la mémoire
+```
+
+```{r}
+# chargement du jeu de donnée
+data <- read.csv("Breast.csv")
+data_reduit <- data[, 1:6000]
+X = data_matrix <- as.matrix(data_reduit[, !(colnames(data_reduit) %in% c("samples", "type"))])
+
+```
+
+```{r}
+data_reduit
+```
+
+
+```{r}
+lambda1 <- c(40)
+```
+
+
+```{r}
+#algo avec la bibliotheque
+out1 <- arrayspc(X,K=1,lambda1,use.corr=FALSE, max.iter=200,trace=FALSE,eps=1e-3)
+print(out1)
+```
+```{r}
+#out1$pev
+#out1$loadings
+```
+
+```{r}
+#fonction pour compter le nombre d'élement d'un vecteur different de 0 
+count_non_zero <- function(data) {
+  # Convertir les données en vecteur si elles sont dans un autre format
+  data_vector <- as.vector(data)
+  
+  # Compter les éléments différents de zéro
+  non_zero_count <- sum(data_vector != 0)
+  
+  return(non_zero_count)
+}
+```
+
+
+```{r}
+sparse_pca <- function(X, k = 6, tol = 1e-8, max_iter = 200, lambda1 ) {
+  # Initialisation
+  X = scale(X, center = TRUE, scale = FALSE)
+  cor_matrix <- t(X) %*% X
+  trace = sum(diag(cor_matrix))
+  X = cor_matrix
+  eig_approx <- irlba::irlba(X, nv = k)
+  A <- eig_approx$v  # Vecteurs propres initiaux
+  B <- matrix(0, nrow = ncol(X), ncol = k)  # Matrice des coefficients
+  converged <- FALSE
+  iter <- 0
+
+  while (!converged && iter < max_iter) {
+    iter <- iter + 1
+    B_prev <- B
+    A_prev <- A
+
+    # Étape 2 : Calcul des coefficients B avec Elastic Net
+    for (j in 1:k) {
+      alpha_j <- A[, j]
+      (abs_val <- abs(t(alpha_j) %*% X) - lambda1 / 2)
+      B[, j] <- ifelse(abs_val > 0, abs_val * sign(t(alpha_j) %*% X), 0)
+      
+
+    }
+    for (j in 1:k){
+     for (i in nrow(B[,j])){
+          print(B[i,j])
+      B[i,j] = max(B[i,j],0)
+    }
+    }
+    # Étape 3 : Mise à jour de A
+    svd_result <- rsvd::rsvd(X %*% B)
+    U <- svd_result$u
+    V <- svd_result$v
+    A <- U %*% t(V)
+
+    # Vérifier la convergence
+    diff_B <- max(abs(B - B_prev))
+    diff_A <- max(abs(A - A_prev))
+    if (diff_B < tol && diff_A < tol) {
+      converged <- TRUE
+    }
+  }
+
+  if (converged) {
+    cat("Convergence atteinte après", iter, "itérations.\n")
+  } else {
+    cat("L'algorithme n'a pas convergé après", max_iter, "itérations.\n")
+  }
+
+  # Étape 4 : Normalisation des coefficients
+  for (j in 1:k) {
+    B[, j] <- B[, j] / sqrt(sum(B[, j]^2) + 1e-8)
+  }
+
+  # Calcul du nombre d'éléments non nuls (tolérance autorisée)
+  non_zero_counts <- colSums(abs(B) > tol)
+  V = B 
+  #calcul de la variance 
+  explained_variance <- apply(V, 2, function(v) {
+  v <- v / sqrt(sum(v^2))  # Normalisation
+  t(v) %*% X %*% v / trace # Formule
+})
+  # Résultat final
+  list(
+    #B = B,
+    non_zero_counts = non_zero_counts,
+    iterations = iter,
+    converged = converged,
+    explained_variance 
+  )
+}
+
+
+```
+
+
+
+
+
+
+```{r}
+X = data_matrix <- as.matrix(data_reduit[, !(colnames(data_reduit) %in% c("samples", "type"))])
+
+sparse_pca(X,1,lambda1= c(50))
+```
+
+
+```{r}
+# Initialisation des variables
+lambda_values <- seq(25, 2000, by = 25)  # Valeurs de lambda1
+results <- list()  # Liste pour stocker les résultats
+
+# Boucle sur les valeurs de lambda1
+for (lambda in lambda_values) {
+  print(lambda)
+  # Appel à sparse_pca
+  sparse_pca_result <- sparse_pca(X, 1, lambda1 = c(lambda))
+  non_zero_sparse_pca <- sparse_pca_result$non_zero_counts
+  variance_sparse_pca <- sparse_pca_result[[4]]  # Extraction de la variance expliquée
+  
+  # Appel à arrayspc
+  arrayspc_result <- arrayspc(X, K = 1,c(lambda), use.corr = FALSE, 
+                              max.iter = 200, trace = FALSE, eps = 1e-3)
+  non_zero_arrayspc <- count_non_zero(arrayspc_result$loadings)
+  variance_arrayspc <- arrayspc_result$pev
+
+  
+  # Stockage des résultats
+  results[[as.character(lambda)]] <- list(
+    lambda = lambda,
+    sparse_pca_non_zero = non_zero_sparse_pca,
+    sparse_pca_variance = variance_sparse_pca,
+    arrayspc_non_zero = non_zero_arrayspc,
+    arrayspc_variance = variance_arrayspc
+  )
+}
+
+# Affichage des résultats
+results_df <- do.call(rbind, lapply(results, as.data.frame))
+print(results_df)
+
+```
+```{r}
+df_ = results_df
+```
+
+```{r}
+df_$
+```
+
+
+```{r}
+# Charger la bibliothèque nécessaire
+library(ggplot2)
+
+# Créer le dataframe des résultats (exemple)
+results_df <- data.frame(
+  sparse_pca_non_zero = df_$sparse_pca_non_zero,
+  sparse_pca_variance = df_$sparse_pca_variance,
+  arrayspc_non_zero = df_$arrayspc_non_zero,
+  arrayspc_variance = df_$arrayspc_variance
+)
+
+# Réorganiser les données pour ggplot
+plot_data <- data.frame(
+  Non_Zero_Params = c(results_df$sparse_pca_non_zero, results_df$arrayspc_non_zero),
+  Variance = c(results_df$sparse_pca_variance, results_df$arrayspc_variance),
+  Method = c(rep("Sparse PCA", length(results_df$sparse_pca_non_zero)), 
+             rep("Array SPC", length(results_df$arrayspc_non_zero)))
+)
+
+# Créer le graphique
+ggplot(plot_data, aes(x = Non_Zero_Params, y = Variance, color = Method)) +
+  geom_line(size = 1.2) +  # Ajouter les courbes
+  geom_point(size = 2) +   # Ajouter des points aux courbes
+  labs(
+    title = "Variance en fonction du nombre de paramètres non nuls",
+    x = "Nombre de paramètres non nuls",
+    y = "Variance expliquée",
+    color = "Méthode"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.title = element_text(size = 14),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12)
+  )
+
+```
+```{r}
+#simple thresholding 
+X = scale(X, center = TRUE, scale = FALSE)
+cor_matrix <- t(X) %*% X
+trace = sum(diag(cor_matrix))
+eig_approx <- irlba::irlba(cor_matrix, nv = 1)
+V <- eig_approx$v  # Vecteurs propres initiaux
+```
+
+```{r}
+filter_eigenvector <- function(eigenvector, lambda,cor_matrix,trace) {
+  # Mettre à zéro les coefficients inférieurs à lambda
+  eigenvector_filtered <- ifelse(abs(eigenvector) < lambda, 0, eigenvector)
+  #calcul de la variance 
+  variance = t(eigenvector_filtered)%*%cor_matrix%*%eigenvector_filtered/trace
+  nombre_non_zero = count_non_zero(eigenvector_filtered)
+  return(list(var = variance,nombr_zero = nombre_non_zero))
+}
+```
+
+```{r}
+filter_eigenvector(V,lambda,cor_matrix,trace)[2]
+```
+```{r}
+results <- data.frame(
+  lambda = numeric(), 
+  variance = numeric(), 
+  nombre_non_zero = integer()
+)
+
+# Boucle for pour faire varier lambda
+for (lambda in seq(0.001, 0.1, by = 0.001)) {
+  # Appel de la fonction
+  result <- filter_eigenvector(V, lambda, cor_matrix, trace)
+  
+  # Stockage des résultats dans le data frame
+  results <- rbind(results, data.frame(
+    lambda = lambda,
+    variance = as.numeric(result[1]),  # Convertir en numérique
+    nombre_non_zero = as.numeric(result[2])
+  ))
+}
+
+# Affichage des résultats
+print(results)
+```
+
+```{r}
+result_ = results
+
+```
+
+```{r}
+library(ggplot2)
+
+# Créer le dataframe des résultats existants
+results_df <- data.frame(
+  sparse_pca_non_zero = df_$sparse_pca_non_zero,
+  sparse_pca_variance = df_$sparse_pca_variance,
+  arrayspc_non_zero = df_$arrayspc_non_zero,
+  arrayspc_variance = df_$arrayspc_variance
+)
+
+# Résultats du simple thresholding
+simple_thresholding <- data.frame(
+  Non_Zero_Params = result_$nombre_non_zero,
+  Variance = result_$variance,
+  Method = rep("Simple Thresholding", length(result_$nombre_non_zero))
+)
+
+# Réorganiser les données pour ggplot
+plot_data <- data.frame(
+  Non_Zero_Params = c(results_df$sparse_pca_non_zero, results_df$arrayspc_non_zero, 
+                      simple_thresholding$Non_Zero_Params),
+  Variance = c(results_df$sparse_pca_variance, results_df$arrayspc_variance, 
+               simple_thresholding$Variance),
+  Method = c(rep("Sparse PCA", length(results_df$sparse_pca_non_zero)), 
+             rep("Array SPC", length(results_df$arrayspc_non_zero)),
+             simple_thresholding$Method)
+)
+
+# Créer le graphique
+ggplot(plot_data, aes(x = Non_Zero_Params, y = Variance, color = Method)) +
+  geom_line(size = 1.2) +  # Ajouter les courbes
+  geom_point(size = 2) +   # Ajouter des points aux courbes
+  labs(
+    title = "Variance en fonction du nombre de paramètres non nuls",
+    x = "Nombre de paramètres non nuls",
+    y = "Variance expliquée",
+    color = "Méthode"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.title = element_text(size = 14),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 12)
+  )
+
+```
+
